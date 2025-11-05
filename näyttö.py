@@ -1,224 +1,361 @@
+# näyttö.py
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime, timedelta
-import calendar
+from tkcalendar import DateEntry
+from datetime import datetime
+import hashlib
 import os
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-# ===============================
-# PÄÄIKKUNA
-# ===============================
-root = tk.Tk()
-root.title("Työaikaseuranta")
-root.geometry("500x600")
+# -------------------------
+# ASETUKSET / TIEDOSTOT
+# -------------------------
+USERS_FILE = "users.txt"
+LOGIN_LOG = "login_log.txt"
+TYOAITA_FILE = "tyoaika.txt"
+RAPORTIT_DIR = "raportit"
 
-tiedosto = "tyoaika.txt"
+if not os.path.exists(RAPORTIT_DIR):
+    os.makedirs(RAPORTIT_DIR)
 
-# ===============================
-# APUFUNKTIO: Päivämäärän tunnistus
-# ===============================
-def parse_pvm(pvm_str):
+
+# -------------------------
+# FUNKTIOT
+# -------------------------
+def sha256_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_users() -> dict:
+    users = {}
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                user, h = line.split(":", 1)
+                users[user] = h
+    return users
+
+
+def write_users(users: dict):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        for u, h in users.items():
+            f.write(f"{u}:{h}\n")
+
+
+def log_login(username: str, success: bool):
+    with open(LOGIN_LOG, "a", encoding="utf-8") as f:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"{ts} | {username} | {'OK' if success else 'FAIL'}\n")
+
+
+def parse_pvm(pvm_str: str) -> datetime:
     for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(pvm_str, fmt)
         except ValueError:
             continue
-    raise ValueError(f"Virheellinen päivämäärä: {pvm_str}")
+    raise ValueError("Päivämäärä väärässä muodossa")
 
-# ===============================
-# TIETOJEN TALLENNUS
-# ===============================
-def tallenna_tiedot():
-    nimi = nimi_var.get().strip()
-    pvm = pvm_var.get().strip()
-    tunnit = tunnit_var.get().strip()
-    palkka = palkka_var.get().strip()
 
-    if not (nimi and pvm and tunnit and palkka):
-        messagebox.showwarning("Virhe", "Täytä kaikki kentät ennen tallennusta.")
-        return
+def lue_tiedot():
+    if not os.path.exists(TYOAITA_FILE):
+        return []
+    data = []
+    with open(TYOAITA_FILE, "r", encoding="utf-8") as f:
+        for r in f:
+            r = r.strip()
+            if not r or ";" not in r:
+                continue
+            osat = r.split(";")
+            if len(osat) >= 4:
+                data.append(osat)
+    return data
 
-    with open(tiedosto, "a", encoding="utf-8") as f:
-        f.write(f"{nimi};{pvm};{tunnit};{palkka}\n")
 
-    messagebox.showinfo("Tallennettu", "Tiedot tallennettu onnistuneesti!")
-    nimi_var.set("")
-    pvm_var.set("")
-    tunnit_var.set("")
-    palkka_var.set("")
+def kirjoita_tiedot(data):
+    with open(TYOAITA_FILE, "w", encoding="utf-8") as f:
+        for r in data:
+            f.write(";".join(r) + "\n")
+
+
+# -------------------------
+# LOGIN & TILIN LUONTI
+# -------------------------
+def kirjautuminen():
+    login = tk.Tk()
+    login.title("Kirjautuminen")
+    login.geometry("360x250")
+    login.resizable(False, False)
+
+    tk.Label(login, text="Käyttäjätunnus:").pack(pady=(12, 2))
+    user_var = tk.StringVar()
+    tk.Entry(login, textvariable=user_var).pack()
+
+    tk.Label(login, text="Salasana:").pack(pady=(8, 2))
+    pw_var = tk.StringVar()
+    tk.Entry(login, textvariable=pw_var, show="*").pack()
+
+    def do_login():
+        user = user_var.get().strip()
+        pw = pw_var.get()
+        if not user or not pw:
+            messagebox.showwarning("Virhe", "Täytä kaikki kentät")
+            return
+        users = read_users()
+        if user in users and users[user] == sha256_hash(pw):
+            log_login(user, True)
+            login.destroy()
+            avaa_paavalikko(user)
+        else:
+            log_login(user, False)
+            messagebox.showerror("Virhe", "Väärä käyttäjätunnus tai salasana")
+
+    def open_create_user():
+        dlg = tk.Toplevel(login)
+        dlg.title("Luo uusi tili")
+        dlg.geometry("300x220")
+        dlg.resizable(False, False)
+
+        tk.Label(dlg, text="Uusi käyttäjätunnus:").pack(pady=(10, 2))
+        new_user = tk.StringVar()
+        tk.Entry(dlg, textvariable=new_user).pack()
+
+        tk.Label(dlg, text="Salasana:").pack(pady=(8, 2))
+        new_pw = tk.StringVar()
+        tk.Entry(dlg, textvariable=new_pw, show="*").pack()
+
+        def create_account():
+            u = new_user.get().strip()
+            p = new_pw.get()
+            if not u or not p:
+                messagebox.showwarning("Virhe", "Täytä kaikki kentät")
+                return
+            users = read_users()
+            if u in users:
+                messagebox.showerror("Virhe", "Tämä käyttäjätunnus on jo olemassa")
+                return
+            users[u] = sha256_hash(p)
+            write_users(users)
+            messagebox.showinfo("Onnistui", "Tili luotu!")
+            dlg.destroy()
+
+        tk.Button(dlg, text="Luo tili", bg="#0078D7", fg="white", command=create_account).pack(pady=12, ipadx=8, ipady=4)
+
+    tk.Button(login, text="Kirjaudu", bg="#0078D7", fg="white", command=do_login).pack(pady=10)
+    tk.Button(login, text="Luo uusi tili", bg="#6c757d", fg="white", command=open_create_user).pack(pady=4)
+
+    login.mainloop()
+
+
+# -------------------------
+# PÄÄIKKUNA
+# -------------------------
+def avaa_paavalikko(user):
+    root = tk.Tk()
+    root.title(f"Työajanseuranta - {user}")
+    root.geometry("560x820")
+    root.configure(bg="#f7f7f7")
+    root.resizable(False, False)
+
+    # Tallennusosio
+    frm_top = tk.Frame(root, bg="#f7f7f7")
+    frm_top.pack(pady=10)
+
+    tk.Label(frm_top, text="Nimi:", bg="#f7f7f7").grid(row=0, column=0, sticky="w", padx=6)
+    nimi_var = tk.StringVar()
+    tk.Entry(frm_top, textvariable=nimi_var, width=36).grid(row=0, column=1, padx=6)
+
+    tk.Label(frm_top, text="Päivämäärä:", bg="#f7f7f7").grid(row=1, column=0, sticky="w", padx=6, pady=(8, 0))
+    paiva_entry = DateEntry(frm_top, date_pattern="dd.mm.yyyy", width=14)
+    paiva_entry.grid(row=1, column=1, sticky="w", padx=6, pady=(8, 0))
+
+    tk.Label(frm_top, text="Tunnit:", bg="#f7f7f7").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 0))
+    tunnit_var = tk.StringVar()
+    tk.Entry(frm_top, textvariable=tunnit_var, width=36).grid(row=2, column=1, padx=6, pady=(8, 0))
+
+    tk.Label(frm_top, text="Tuntipalkka (€):", bg="#f7f7f7").grid(row=3, column=0, sticky="w", padx=6, pady=(8, 0))
+    palkka_var = tk.StringVar(value="16.50")
+    tk.Entry(frm_top, textvariable=palkka_var, width=36).grid(row=3, column=1, padx=6, pady=(8, 0))
+
+    def tallenna():
+        nimi = nimi_var.get().strip()
+        pvm = paiva_entry.get_date().strftime("%d.%m.%Y")
+        tunnit = tunnit_var.get().strip()
+        palkka = palkka_var.get().strip()
+        if not nimi or not tunnit or not palkka:
+            messagebox.showwarning("Virhe", "Täytä kaikki kentät.")
+            return
+        try:
+            float(tunnit)
+            float(palkka)
+        except:
+            messagebox.showerror("Virhe", "Tunnit ja palkka pitää olla numeroita.")
+            return
+        with open(TYOAITA_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{nimi};{pvm};{tunnit};{palkka}\n")
+        messagebox.showinfo("Tallennettu", f"Tiedot tallennettu {pvm}")
+        nimi_var.set(""); tunnit_var.set(""); palkka_var.set("16.50")
+        paivita_tyontekijat()
+
+    tk.Button(frm_top, text="Tallenna", bg="#3cb371", fg="white", command=tallenna).grid(row=4, column=0, columnspan=2, pady=10)
+
+    # Keskiosa: valinnat
+    frm_mid = tk.Frame(root, bg="#f7f7f7")
+    frm_mid.pack(pady=6)
+
+    tk.Label(frm_mid, text="Valitse työntekijä:", bg="#f7f7f7").grid(row=0, column=0, padx=8)
+    valittu_nimi = tk.StringVar()
+    tyontekija_combo = ttk.Combobox(frm_mid, textvariable=valittu_nimi, state="readonly", width=36)
+    tyontekija_combo.grid(row=0, column=1, padx=8, pady=6)
+
+    tk.Label(frm_mid, text="Tarkastelu:", bg="#f7f7f7").grid(row=1, column=0, padx=8)
+    valinta = tk.StringVar(value="Päivä")
+    valinta_combo = ttk.Combobox(frm_mid, textvariable=valinta,
+                                 values=["Päivä", "Viikko", "Kuukausi", "Vuosi"], state="readonly", width=33)
+    valinta_combo.grid(row=1, column=1, padx=8, pady=6)
+
+    tk.Label(frm_mid, text="Alkupäivä:", bg="#f7f7f7").grid(row=2, column=0, padx=8)
+    alku_entry = DateEntry(frm_mid, date_pattern="dd.mm.yyyy", width=14)
+    alku_entry.grid(row=2, column=1, sticky="w", padx=8)
+
+    tk.Label(frm_mid, text="Loppupäivä:", bg="#f7f7f7").grid(row=3, column=0, padx=8)
+    loppu_entry = DateEntry(frm_mid, date_pattern="dd.mm.yyyy", width=14)
+    loppu_entry.grid(row=3, column=1, sticky="w", padx=8)
+
+    result_label = tk.Label(root, text="", bg="white", bd=1, relief="solid", justify="left", anchor="w", font=("Arial", 11))
+    result_label.pack(padx=18, pady=12, fill="x")
+
+    def paivita_tyontekijat():
+        nimet = sorted(set([r[0] for r in lue_tiedot()]))
+        tyontekija_combo["values"] = nimet
+        if nimet:
+            valittu_nimi.set(nimet[0])
+
     paivita_tyontekijat()
 
-# ===============================
-# TIETOJEN POISTO
-# ===============================
-def poista_tiedot():
-    nimi = valittu_tyontekija.get()
-    if not nimi:
-        messagebox.showwarning("Virhe", "Valitse työntekijä ennen poistamista!")
-        return
+    def laske_yhteenveto(nimi, tyyppi, alku=None, loppu=None):
+        data = lue_tiedot()
+        tunnit = 0
+        eurot = 0
+        for n, pvm_str, t, palkka in data:
+            if n != nimi:
+                continue
+            try:
+                pvm = parse_pvm(pvm_str)
+            except:
+                continue
+            if alku and loppu:
+                if not (alku <= pvm <= loppu):
+                    continue
+            elif tyyppi == "Kuukausi":
+                now = datetime.now()
+                if pvm.month != now.month or pvm.year != now.year:
+                    continue
+            elif tyyppi == "Vuosi":
+                now = datetime.now()
+                if pvm.year != now.year:
+                    continue
+            try:
+                tunnit += float(t)
+                eurot += float(t) * float(palkka)
+            except:
+                pass
+        return tunnit, eurot
 
-    valinta = yhteenveto_valinta.get()
+    def nayta():
+        nimi = valittu_nimi.get()
+        tyyppi = valinta.get()
+        if not nimi:
+            messagebox.showwarning("Virhe", "Valitse työntekijä")
+            return
+        alku = parse_pvm(alku_entry.get())
+        loppu = parse_pvm(loppu_entry.get())
+        tunnit, eurot = laske_yhteenveto(nimi, tyyppi, alku, loppu)
+        result_label.config(text=f"{tyyppi}-yhteenveto {nimi}\nAjalla {alku.strftime('%d.%m.%Y')} - {loppu.strftime('%d.%m.%Y')}\n\nTunnit: {tunnit:.2f}\nAnsiot: {eurot:.2f} €")
 
-    if not os.path.exists(tiedosto):
-        messagebox.showwarning("Virhe", "Tiedostoa ei löydy.")
-        return
+    def pdf():
+        nimi = valittu_nimi.get()
+        tyyppi = valinta.get()
+        alku = parse_pvm(alku_entry.get())
+        loppu = parse_pvm(loppu_entry.get())
+        tunnit, eurot = laske_yhteenveto(nimi, tyyppi, alku, loppu)
+        tiedosto = os.path.join(RAPORTIT_DIR, f"{nimi}_{tyyppi}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf")
+        c = canvas.Canvas(tiedosto, pagesize=A4)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(50, 800, f"{tyyppi}-yhteenveto — {nimi}")
+        c.setFont("Helvetica", 12)
+        c.drawString(50, 770, f"Ajalta: {alku.strftime('%d.%m.%Y')} - {loppu.strftime('%d.%m.%Y')}")
+        c.drawString(50, 740, f"Tunnit yhteensä: {tunnit:.2f} h")
+        c.drawString(50, 720, f"Ansiot yhteensä: {eurot:.2f} €")
+        c.save()
+        messagebox.showinfo("PDF luotu", f"Tallennettu {tiedosto}")
 
-    with open(tiedosto, "r", encoding="utf-8") as f:
-        rivit = f.readlines()
+    def poista():
+        nimi = valittu_nimi.get()
+        alku = parse_pvm(alku_entry.get())
+        loppu = parse_pvm(loppu_entry.get())
+        data = lue_tiedot()
+        uusi = []
+        for r in data:
+            try:
+                pvm = parse_pvm(r[1])
+                if r[0] == nimi and alku <= pvm <= loppu:
+                    continue
+            except:
+                pass
+            uusi.append(r)
+        kirjoita_tiedot(uusi)
+        messagebox.showinfo("Poistettu", "Merkinnät poistettu.")
+        paivita_tyontekijat()
 
-    poistettavat = []
-    nyt = datetime.now()
-    for r in rivit:
-        osat = r.strip().split(";")
-        if len(osat) < 4:
-            continue
-        n, pvm_str, _, _ = osat
-        try:
-            pvm = parse_pvm(pvm_str)
-        except ValueError:
-            continue
+    # Napit
+    btn_frame = tk.Frame(root, bg="#f7f7f7")
+    btn_frame.pack(pady=6)
+    tk.Button(btn_frame, text="Näytä yhteenveto", bg="#1E90FF", fg="white", command=nayta).grid(row=0, column=0, padx=6, pady=6)
+    tk.Button(btn_frame, text="Tallenna PDF", bg="#FFA500", fg="black", command=pdf).grid(row=0, column=1, padx=6, pady=6)
+    tk.Button(btn_frame, text="Poista tiedot", bg="#FF3333", fg="white", command=poista).grid(row=1, column=0, padx=6, pady=6)
+    tk.Button(btn_frame, text="Sulje ohjelma", bg="#555555", fg="white", command=root.destroy).grid(row=1, column=1, padx=6, pady=6)
 
-        if n == nimi:
-            if valinta == "Päivä" and pvm.date() == nyt.date():
-                poistettavat.append(r)
-            elif valinta == "Viikko" and pvm.isocalendar()[1] == nyt.isocalendar()[1]:
-                poistettavat.append(r)
-            elif valinta == "Kuukausi" and pvm.month == nyt.month and pvm.year == nyt.year:
-                poistettavat.append(r)
-            elif valinta == "Vuosi" and pvm.year == nyt.year:
-                poistettavat.append(r)
+    # Salasanan vaihto
+    def vaihda_salasana():
+        dlg = tk.Toplevel(root)
+        dlg.title("Vaihda salasana")
+        dlg.geometry("320x220")
+        dlg.resizable(False, False)
 
-    uudet_rivit = [r for r in rivit if r not in poistettavat]
-    with open(tiedosto, "w", encoding="utf-8") as f:
-        f.writelines(uudet_rivit)
+        tk.Label(dlg, text="Vanha salasana:").pack(pady=(10, 2))
+        old_var = tk.StringVar()
+        tk.Entry(dlg, textvariable=old_var, show="*").pack()
 
-    messagebox.showinfo("Poistettu", f"Poistettu {len(poistettavat)} merkintää ({valinta}) työntekijältä {nimi}.")
+        tk.Label(dlg, text="Uusi salasana:").pack(pady=(8, 2))
+        new_var = tk.StringVar()
+        tk.Entry(dlg, textvariable=new_var, show="*").pack()
 
-# ===============================
-# TYÖNTEKIJÄLISTA
-# ===============================
-def paivita_tyontekijat():
-    if not os.path.exists(tiedosto):
-        return
-    with open(tiedosto, "r", encoding="utf-8") as f:
-        nimet = sorted(set(r.split(";")[0] for r in f if ";" in r))
-    tyontekija_menu["values"] = nimet
+        def save_pw():
+            oldp = old_var.get()
+            newp = new_var.get()
+            users = read_users()
+            if users.get(user) != sha256_hash(oldp):
+                messagebox.showerror("Virhe", "Vanha salasana väärin.")
+                return
+            users[user] = sha256_hash(newp)
+            write_users(users)
+            messagebox.showinfo("Onnistui", "Salasana vaihdettu.")
+            dlg.destroy()
 
-# ===============================
-# YHTEENVETOLASKENTA
-# ===============================
-def laske_yhteenveto(tyontekija, tyyppi):
-    if not os.path.exists(tiedosto):
-        return None
+        tk.Button(dlg, text="Tallenna", bg="#0078D7", fg="white", command=save_pw).pack(pady=12, ipadx=6, ipady=4)
 
-    with open(tiedosto, "r", encoding="utf-8") as f:
-        rivit = f.readlines()
+    tk.Button(root, text="Vaihda salasana", bg="#6c757d", fg="white", command=vaihda_salasana).pack(pady=(6, 12))
 
-    nyt = datetime.now()
-    tunnit_yht = 0.0
-    palkka_yht = 0.0
+    root.mainloop()
 
-    for r in rivit:
-        osat = r.strip().split(";")
-        if len(osat) < 4:
-            continue
-        nimi, pvm_str, tunnit, palkka = osat
-        if nimi != tyontekija:
-            continue
 
-        try:
-            pvm = parse_pvm(pvm_str)
-        except ValueError:
-            continue
-
-        if tyyppi == "Päivä" and pvm.date() == nyt.date():
-            tunnit_yht += float(tunnit)
-            palkka_yht += float(palkka)
-        elif tyyppi == "Viikko" and pvm.isocalendar()[1] == nyt.isocalendar()[1]:
-            tunnit_yht += float(tunnit)
-            palkka_yht += float(palkka)
-        elif tyyppi == "Kuukausi" and pvm.month == nyt.month and pvm.year == nyt.year:
-            tunnit_yht += float(tunnit)
-            palkka_yht += float(palkka)
-        elif tyyppi == "Vuosi" and pvm.year == nyt.year:
-            tunnit_yht += float(tunnit)
-            palkka_yht += float(palkka)
-
-    return {"tunnit": tunnit_yht, "ansiot": palkka_yht}
-
-# ===============================
-# PDF-TULOSTUS
-# ===============================
-def tallenna_yhteenveto_pdf():
-    nimi = valittu_tyontekija.get()
-    tyyppi = yhteenveto_valinta.get()
-
-    if not nimi:
-        messagebox.showwarning("Virhe", "Valitse työntekijä ennen tallennusta.")
-        return
-
-    tulos = laske_yhteenveto(nimi, tyyppi)
-    if not tulos:
-        messagebox.showinfo("Tietoja ei löytynyt", "Ei tallennettuja tietoja.")
-        return
-
-    pdf_nimi = f"Yhteenveto_{nimi}_{tyyppi}.pdf"
-    c = canvas.Canvas(pdf_nimi, pagesize=A4)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(100, 800, f"{tyyppi}-yhteenveto työntekijälle {nimi}")
-    c.setFont("Helvetica", 12)
-    c.drawString(100, 770, f"Työtunnit yhteensä: {tulos['tunnit']:.2f}")
-    c.drawString(100, 750, f"Ansiot yhteensä: {tulos['ansiot']:.2f} €")
-    c.save()
-
-    messagebox.showinfo("PDF luotu", f"PDF tallennettu nimellä {pdf_nimi}")
-
-# ===============================
-# SULJE OHJELMA
-# ===============================
-def sulje_ohjelma():
-    root.destroy()
-
-# ===============================
-# KÄYTTÖLIITTYMÄ
-# ===============================
-tk.Label(root, text="Nimi:").pack()
-nimi_var = tk.StringVar()
-tk.Entry(root, textvariable=nimi_var).pack()
-
-tk.Label(root, text="Päivämäärä (pp.kk.vvvv tai vvvv-kk-pp):").pack()
-pvm_var = tk.StringVar()
-tk.Entry(root, textvariable=pvm_var).pack()
-
-tk.Label(root, text="Tunnit:").pack()
-tunnit_var = tk.StringVar()
-tk.Entry(root, textvariable=tunnit_var).pack()
-
-tk.Label(root, text="Palkka (€):").pack()
-palkka_var = tk.StringVar()
-tk.Entry(root, textvariable=palkka_var).pack()
-
-tk.Button(root, text="Tallenna tiedot", bg="green", fg="white", command=tallenna_tiedot).pack(pady=5)
-
-tk.Label(root, text="Valitse työntekijä:").pack()
-valittu_tyontekija = tk.StringVar()
-tyontekija_menu = ttk.Combobox(root, textvariable=valittu_tyontekija, state="readonly", width=25)
-tyontekija_menu.pack(pady=5)
-paivita_tyontekijat()
-
-tk.Label(root, text="Valitse tarkastelu:").pack()
-yhteenveto_valinta = tk.StringVar()
-yhteenveto_valinta.set("Päivä")
-valinta_menu = ttk.Combobox(root, textvariable=yhteenveto_valinta, values=["Päivä", "Viikko", "Kuukausi", "Vuosi"], state="readonly", width=20)
-valinta_menu.pack(pady=5)
-
-tk.Button(root, text="Näytä yhteenveto", bg="blue", fg="white",
-          command=lambda: messagebox.showinfo("Yhteenveto", 
-              f"{yhteenveto_valinta.get()} yhteenveto työntekijälle {valittu_tyontekija.get()}")).pack(pady=5)
-
-tk.Button(root, text="Tallenna yhteenveto PDF", bg="orange", fg="black", command=tallenna_yhteenveto_pdf).pack(pady=5)
-tk.Button(root, text="Poista tiedot", bg="red", fg="white", command=poista_tiedot).pack(pady=5)
-tk.Button(root, text="Sulje ohjelma", bg="gray", fg="white", command=sulje_ohjelma).pack(pady=10)
-
-root.mainloop()
+# -------------------------
+# KÄYNNISTYS
+# -------------------------
+if __name__ == "__main__":
+    kirjautuminen()
