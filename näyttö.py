@@ -1,4 +1,3 @@
-# näyttö.py
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkcalendar import DateEntry
@@ -237,35 +236,7 @@ def avaa_paavalikko(user):
 
     paivita_tyontekijat()
 
-    def laske_yhteenveto(nimi, tyyppi, alku=None, loppu=None):
-        data = lue_tiedot()
-        tunnit = 0
-        eurot = 0
-        for n, pvm_str, t, palkka in data:
-            if n != nimi:
-                continue
-            try:
-                pvm = parse_pvm(pvm_str)
-            except:
-                continue
-            if alku and loppu:
-                if not (alku <= pvm <= loppu):
-                    continue
-            elif tyyppi == "Kuukausi":
-                now = datetime.now()
-                if pvm.month != now.month or pvm.year != now.year:
-                    continue
-            elif tyyppi == "Vuosi":
-                now = datetime.now()
-                if pvm.year != now.year:
-                    continue
-            try:
-                tunnit += float(t)
-                eurot += float(t) * float(palkka)
-            except:
-                pass
-        return tunnit, eurot
-
+    # ---- PARANNETTU NÄYTÄ ----
     def nayta():
         nimi = valittu_nimi.get()
         tyyppi = valinta.get()
@@ -274,26 +245,106 @@ def avaa_paavalikko(user):
             return
         alku = parse_pvm(alku_entry.get())
         loppu = parse_pvm(loppu_entry.get())
-        tunnit, eurot = laske_yhteenveto(nimi, tyyppi, alku, loppu)
-        result_label.config(text=f"{tyyppi}-yhteenveto {nimi}\nAjalla {alku.strftime('%d.%m.%Y')} - {loppu.strftime('%d.%m.%Y')}\n\nTunnit: {tunnit:.2f}\nAnsiot: {eurot:.2f} €")
 
+        data = lue_tiedot()
+        paiva_summa = {}
+
+        for n, pvm_str, t, palkka in data:
+            if n != nimi:
+                continue
+            try:
+                pvm = parse_pvm(pvm_str)
+            except:
+                continue
+            if not (alku <= pvm <= loppu):
+                continue
+            try:
+                t = float(t)
+                palkka = float(palkka)
+            except:
+                continue
+            if pvm_str not in paiva_summa:
+                paiva_summa[pvm_str] = [0.0, 0.0]
+            paiva_summa[pvm_str][0] += t
+            paiva_summa[pvm_str][1] += t * palkka
+
+        if not paiva_summa:
+            result_label.config(text="Ei tietoja valitulta ajalta.")
+            return
+
+        yhte_tunnit = sum(v[0] for v in paiva_summa.values())
+        yhte_eurot = sum(v[1] for v in paiva_summa.values())
+
+        lines = [f"{tyyppi}-yhteenveto — {nimi}",
+                 f"Ajalla {alku.strftime('%d.%m.%Y')} - {loppu.strftime('%d.%m.%Y')}",
+                 "",
+                 "Päiväkohtainen yhteenveto:"]
+        for pvm_str in sorted(paiva_summa.keys(), key=lambda x: parse_pvm(x)):
+            tunnit, eurot = paiva_summa[pvm_str]
+            lines.append(f"{pvm_str}: {tunnit:.2f} h — {eurot:.2f} €")
+
+        lines.append("")
+        lines.append(f"Yhteensä: {yhte_tunnit:.2f} h — {yhte_eurot:.2f} €")
+
+        result_label.config(text="\n".join(lines))
+
+    # ---- PARANNETTU PDF ----
     def pdf():
         nimi = valittu_nimi.get()
         tyyppi = valinta.get()
         alku = parse_pvm(alku_entry.get())
         loppu = parse_pvm(loppu_entry.get())
-        tunnit, eurot = laske_yhteenveto(nimi, tyyppi, alku, loppu)
+
+        data = lue_tiedot()
+        paiva_summa = {}
+
+        for n, pvm_str, t, palkka in data:
+            if n != nimi:
+                continue
+            try:
+                pvm = parse_pvm(pvm_str)
+            except:
+                continue
+            if not (alku <= pvm <= loppu):
+                continue
+            try:
+                t = float(t)
+                palkka = float(palkka)
+            except:
+                continue
+            if pvm_str not in paiva_summa:
+                paiva_summa[pvm_str] = [0.0, 0.0]
+            paiva_summa[pvm_str][0] += t
+            paiva_summa[pvm_str][1] += t * palkka
+
+        yhte_tunnit = sum(v[0] for v in paiva_summa.values())
+        yhte_eurot = sum(v[1] for v in paiva_summa.values())
+
         tiedosto = os.path.join(RAPORTIT_DIR, f"{nimi}_{tyyppi}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf")
         c = canvas.Canvas(tiedosto, pagesize=A4)
         c.setFont("Helvetica-Bold", 14)
         c.drawString(50, 800, f"{tyyppi}-yhteenveto — {nimi}")
         c.setFont("Helvetica", 12)
         c.drawString(50, 770, f"Ajalta: {alku.strftime('%d.%m.%Y')} - {loppu.strftime('%d.%m.%Y')}")
-        c.drawString(50, 740, f"Tunnit yhteensä: {tunnit:.2f} h")
-        c.drawString(50, 720, f"Ansiot yhteensä: {eurot:.2f} €")
+        c.drawString(50, 740, "Päiväkohtainen yhteenveto:")
+
+        y = 720
+        for pvm_str in sorted(paiva_summa.keys(), key=lambda x: parse_pvm(x)):
+            tunnit, eurot = paiva_summa[pvm_str]
+            c.drawString(60, y, f"{pvm_str}: {tunnit:.2f} h — {eurot:.2f} €")
+            y -= 20
+            if y < 60:
+                c.showPage()
+                y = 800
+
+        y -= 20
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, f"Yhteensä: {yhte_tunnit:.2f} h — {yhte_eurot:.2f} €")
         c.save()
+
         messagebox.showinfo("PDF luotu", f"Tallennettu {tiedosto}")
 
+    # ---- POISTA ----
     def poista():
         nimi = valittu_nimi.get()
         alku = parse_pvm(alku_entry.get())
